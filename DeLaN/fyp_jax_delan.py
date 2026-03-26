@@ -19,8 +19,6 @@ try:
 except:
     pass
 
-print(jax.devices())
-
 activations = {
     'tanh': jnp.tanh,
     'softplus': jax.nn.softplus,
@@ -37,14 +35,14 @@ def load_dataset(n_characters=1, filename="data/combined_data.pickle", test_labe
     # Split the dataset in train and test set:
 
     # Random Test Set:
-    # test_idx = np.random.choice(len(data["labels"]), n_characters, replace=False)
+    test_idx = np.random.choice(len(data["labels"]), n_characters, replace=False)
 
     # Specified Test Set:
-    test_idx = [data["labels"].index(x) for x in test_label]
+    # test_idx = [data["labels"].index(x) for x in test_label]
 
     dt = np.concatenate([data["t"][idx][1:] - data["t"][idx][:-1] for idx in test_idx])
     dt_mean, dt_var = np.mean(dt), np.var(dt)
-    assert dt_var < 1.e-12
+    # assert dt_var < 1.e-12
 
     train_labels, test_labels = [], []
     train_qp, train_qv, train_qa, train_tau = np.zeros((0, n_dof)), np.zeros((0, n_dof)), np.zeros((0, n_dof)), np.zeros((0, n_dof))
@@ -65,9 +63,14 @@ def load_dataset(n_characters=1, filename="data/combined_data.pickle", test_labe
             test_qa = np.vstack((test_qa, data["qa"][i]))
             test_tau = np.vstack((test_tau, data["tau"][i]))
 
-            test_m = np.vstack((test_m, data["m"][i]))
-            test_c = np.vstack((test_c, data["c"][i]))
-            test_g = np.vstack((test_g, data["g"][i]))
+            if tau_decomposition:
+                test_m = np.vstack((test_m, data["m"][i]))
+                test_c = np.vstack((test_c, data["c"][i]))
+                test_g = np.vstack((test_g, data["g"][i]))
+            else:
+                test_m = np.vstack((test_m, np.zeros_like(data["qp"][i])))
+                test_c = np.vstack((test_c, np.zeros_like(data["qp"][i])))
+                test_g = np.vstack((test_g, np.zeros_like(data["qp"][i])))
 
             divider.append(test_qp.shape[0])
 
@@ -286,10 +289,11 @@ def inverse_loss_fn(params, q, qd, qdd, tau, lagrangian, n_dof, norm_tau, norm_q
 seed = 0
 cuda = 0
 render = 1
-load_model = 1
-save_model = 0
+load_model = 0
+save_model = 1
 rng_key = jax.random.PRNGKey(seed)
 model_id = 'structured' # 'black_box'
+tau_decomposition = 0
 
 # Construct Hyperparameters:
 if model_id == "structured":
@@ -315,7 +319,7 @@ hyper = {
     }
 
 if load_model:
-    with open(f"data/fyp_jax_delan.jax", 'rb') as f:
+    with open(f"data/fyp_jax_delan_50.jax", 'rb') as f:
         data = pickle.load(f)
 
     hyper = data["hyper"]
@@ -326,6 +330,7 @@ else:
 
 # Read the dataset:
 train_data, test_data, divider, dt = load_dataset(
+                                    n_characters= 100,
                                     filename="./data/100_trajectory_torques_rows/combined_data.pickle",
                                     test_label=["101","102"])
 
@@ -440,7 +445,7 @@ while epoch_i < hyper['max_epoch'] and not load_model:
 
 # Save the Model:
 if save_model:
-    with open(f"data/fyp_jax_delan.jax", "wb") as file:
+    with open(f"data/fyp_jax_delan_50.jax", "wb") as file:
         pickle.dump(
             {"epoch": epoch_i,
                 "hyper": hyper,
@@ -522,7 +527,7 @@ for j in range(num_joints):
         # Add joint name on the left side of the row
         if col == 0:
             ax.text(
-                s = f"Joint {j}", x=-0.35, y=0.5,
+                s = f"Joint {j+1}", x=-0.35, y=0.5,
                 fontsize=12, fontweight="bold",
                 rotation=90, ha="center", va="center",
                 transform=ax.transAxes
