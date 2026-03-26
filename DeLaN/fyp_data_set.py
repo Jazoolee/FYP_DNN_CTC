@@ -19,7 +19,7 @@ def csv_to_custom_dict(filename):
     # Combine every 3 keys after the first
     group_index = 1
     i=0
-    key_names = ["qp","qv","qa","tau","m","c","g"]
+    key_names = ["qp","qv","tau","qa","m","c","g"]
     while group_index < len(keys):
         group = keys[group_index:group_index + 3]
         group_values = values[group_index:group_index + 3]

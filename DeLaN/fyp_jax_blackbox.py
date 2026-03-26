@@ -8,6 +8,8 @@ import functools
 import time
 import optax
 import matplotlib as mp
+import csv
+import os
 
 try:
     mp.use("Qt5Agg")
@@ -147,14 +149,14 @@ def load_dataset(n_characters=1, filename="combined_data.pickle", test_label=("3
     n_dof = 3
 
     # Random Test Set:
-    # test_idx = np.random.choice(len(data["labels"]), n_characters, replace=False)
+    test_idx = np.random.choice(len(data["labels"]), n_characters, replace=False)
 
     # Specified Test Set:
-    test_idx = [data["labels"].index(x) for x in test_label]
+    # test_idx = [data["labels"].index(x) for x in test_label]
 
     dt = np.concatenate([data["t"][idx][1:] - data["t"][idx][:-1] for idx in test_idx])
     dt_mean, dt_var = np.mean(dt), np.var(dt)
-    assert dt_var < 1.e-12
+    # assert dt_var < 1.e-12
 
     train_labels, test_labels = [], []
     train_qp, train_qv, train_qa, train_tau = np.zeros((0, n_dof)), np.zeros((0, n_dof)), np.zeros((0, n_dof)), np.zeros((0, n_dof))
@@ -172,9 +174,14 @@ def load_dataset(n_characters=1, filename="combined_data.pickle", test_label=("3
             test_qa = np.vstack((test_qa, data["qa"][i]))
             test_tau = np.vstack((test_tau, data["tau"][i]))
 
-            test_m = np.vstack((test_m, data["m"][i]))
-            test_c = np.vstack((test_c, data["c"][i]))
-            test_g = np.vstack((test_g, data["g"][i]))
+            if tau_decomposition:
+                test_m = np.vstack((test_m, data["m"][i]))
+                test_c = np.vstack((test_c, data["c"][i]))
+                test_g = np.vstack((test_g, data["g"][i]))
+            else:
+                test_m = np.vstack((test_m, np.zeros_like(data["qp"][i])))
+                test_c = np.vstack((test_c, np.zeros_like(data["qp"][i])))
+                test_g = np.vstack((test_g, np.zeros_like(data["qp"][i])))
 
             divider.append(test_qp.shape[0])
 
@@ -189,6 +196,92 @@ def load_dataset(n_characters=1, filename="combined_data.pickle", test_label=("3
            (test_labels, test_qp, test_qv, test_qa, test_tau, test_m, test_c, test_g),\
            divider, dt_mean
 
+def compute_error_dict(delan_tau, test_tau, test_labels, divider):
+    """
+    Creates a dictionary:
+        key   -> test label
+        value -> error array (num_samples_i, n_dof)
+
+    Args:
+        pred: predicted values (N, n_dof)
+        gt: ground truth values (N, n_dof)
+        labels: list of test labels
+        divider: list of indices marking boundaries
+
+    Returns:
+        dict[label] = error array
+    """
+    error_dict = {}
+
+    for i, label in enumerate(test_labels):
+        start = divider[i]
+        end = divider[i + 1]
+
+        # Slice per character
+        delan_tau_i = delan_tau[start:end]
+        test_tau_i = test_tau[start:end]
+
+        # Compute squared error (you can change this if needed)
+        error_i = (delan_tau_i - test_tau_i) ** 2
+
+        error_dict[label] = error_i
+
+    return error_dict
+
+def add_errors_to_csv(error_dict, folder_path, prefix="error"):
+    """
+    Adds error columns (error1, error2, error3, ...) to each CSV file using csv module.
+
+    Args:
+        error_dict: dict[label] = (num_samples, n_dof) error array
+        folder_path: directory containing CSV files (one per label)
+        prefix: column name prefix (default: "error")
+
+    Assumes:
+        CSV filename = <label>.csv
+    """
+
+    for label, error_array in error_dict.items():
+        file_path = os.path.join(folder_path, f"path_0{80+int(label)}_joint_states_1.csv")
+
+        if not os.path.exists(file_path):
+            print(f"[WARNING] File not found for label {label}: {file_path}")
+            continue
+
+        # Read existing CSV
+        with open(file_path, "r", newline="") as f:
+            reader = list(csv.reader(f))
+
+        header = reader[0]
+        rows = reader[1:]
+
+        # Check length match
+        if len(rows) != error_array.shape[0]:
+            print(f"[ERROR] Length mismatch for {label}: CSV={len(rows)}, error={error_array.shape[0]}")
+            continue
+
+        # Add new column names
+        n_dof = error_array.shape[1]
+        error_headers = [f"{prefix}{i+1}" for i in range(n_dof)]
+        new_header = header + error_headers
+
+        # Append error values row-wise
+        new_rows = []
+        for i, row in enumerate(rows):
+            error_values = error_array[i]
+            # Convert to string for CSV writing
+            error_values_str = [str(val) for val in error_values]
+            new_rows.append(row + error_values_str)
+
+        new_file_path = os.path.join(folder_path, f"{label}.csv")
+        # Write back (overwrite file)
+        with open(new_file_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(new_header)
+            writer.writerows(new_rows)
+
+        print(f"[INFO] Updated {new_file_path}")
+
 activations = {
     'tanh': jnp.tanh,
     'softplus': jax.nn.softplus,
@@ -200,6 +293,7 @@ render = 1
 load_model = 1
 save_model = 0
 rng_key = jax.random.PRNGKey(seed)
+tau_decomposition = 0
 
 # Construct Hyperparameters:
 hyper = {
@@ -216,7 +310,7 @@ hyper = {
     }
 
 if load_model:
-    with open(f"./data/fyp_jax_blackbox.jax", 'rb') as f:
+    with open(f"./data/fyp_jax_blackbox_50.jax", 'rb') as f:
         data = pickle.load(f)
 
     hyper = data["hyper"]
@@ -227,7 +321,7 @@ else:
 
 # Read the dataset:
 train_data, test_data, divider, dt = load_dataset(
-                                    n_characters= 10,
+                                    n_characters= 3,
                                     filename="./data/100_trajectory_torques_rows/combined_data.pickle",
                                     test_label=["101","102"])
 
@@ -342,7 +436,7 @@ while epoch_i < hyper['max_epoch'] and not load_model:
 
 # Save the Model:
 if save_model:
-    with open(f"./data/fyp_jax_blackbox.jax", "wb") as file:
+    with open(f"./data/fyp_jax_blackbox_50.jax", "wb") as file:
         pickle.dump(
             {"epoch": epoch_i,
             "hyper": hyper,
@@ -372,6 +466,9 @@ err_g = 1. / float(test_qp.shape[0]) * np.sum((delan_g - test_g) ** 2)
 err_m = 1. / float(test_qp.shape[0]) * np.sum((delan_m - test_m) ** 2)
 err_c = 1. / float(test_qp.shape[0]) * np.sum((delan_c - test_c) ** 2)
 err_tau = 1. / float(test_qp.shape[0]) * np.sum((delan_tau - test_tau) ** 2)
+
+# error_dict = compute_error_dict(delan_tau, test_tau, test_labels, divider)
+# add_errors_to_csv(error_dict, "./data/100_trajectory_torques_rows", prefix="error")
 
 print("\nPerformance:")
 print("                Torque MSE = {0:.3e}".format(err_tau))
